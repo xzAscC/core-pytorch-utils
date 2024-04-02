@@ -5,11 +5,13 @@ A framework for machine learning tasks. This framework is forked from the origin
 ## Requirements
 
 - Python 3.6+
+- termcolor: 2.4.0
 
 ## TODO
 
 - [ ] add badge
-- [ ] add trainer
+- [x] add trainer
+  - [ ] write function MetricStorage, LRWarmupScheduler, HookBase 
 
 ## Git Commit Message Convention
 
