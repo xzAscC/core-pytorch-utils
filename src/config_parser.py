@@ -3,6 +3,7 @@ import logging
 import yaml
 import os
 
+# refer to https://pypi.org/project/ConfigArgParse/ for further improvements
 logger = logging.getLogger(__name__)
 
 
@@ -68,5 +69,7 @@ def save_args(
         if not filepath.endswith(".yaml"):
             logger.warning(f"filepath {filepath} should end with .yaml.")
         if not isinstance(args, argparse.Namespace):
-            logger.warning(f"args should be an argparse.Namespace but have {type(args)}.")
+            logger.warning(
+                f"args should be an argparse.Namespace but have {type(args)}."
+            )
         return None
