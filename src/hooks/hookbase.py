@@ -1,4 +1,5 @@
 import trainer
+from types import Optional
 class HookBase:
     """Base class for hooks.
 
@@ -25,7 +26,7 @@ class HookBase:
     >>>     hook.after_epoch()
     >>> hook.after_train()
     """
-
+    trainer: Optional[trainer.Trainer] = None
     priority: int = 5
 
     def before_train(self) -> None:
@@ -65,7 +66,7 @@ class HookBase:
         return self.__class__.__name__
 
     @property
-    def metric_storage(self) -> trainer.MetricStorage:
+    def metric_storage(self) -> Optional(trainer.MetricStorage):
         return self.trainer.metric_storage
 
     def log(self, *args, **kwargs) -> None:
