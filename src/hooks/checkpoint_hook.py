@@ -1,6 +1,8 @@
 from hookbase import HookBase
 from typing import List, Optional, Dict, Any
 import os
+
+
 class CheckpointHook(HookBase):
     """Save checkpoint periodically.
 
