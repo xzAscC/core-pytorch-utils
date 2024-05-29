@@ -6,7 +6,8 @@ from torch.utils.data import DataLoader
 import torch.nn as nn
 from .lr_scheduler import LRWarmupScheduler
 from .logger import setup_logger
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
+import time
 import os
 import weakref
 import numpy as np
@@ -226,6 +227,93 @@ class Trainer:
         if len(metrics_dict) > 1:
             self.log(self.cur_iter, **metrics_dict)
 
+    def train_one_iter(self) -> None:
+        """Train one iteration.
+
+        Subclass :class:`cpu.trainer.Trainer` and implement your own :meth:`train_one_iter`
+        to do something fancier.
+        """
+        iter_start_time = time.perf_counter()
+
+        ######################
+        # 1. Load batch data #
+        ######################
+        # we choose to read data by iterator instead of `for data in data_loader`
+        # in order to calculate the data loading time
+        start = time.perf_counter()
+        try:
+            batch = next(self._data_iter)
+        except StopIteration:
+            self._data_iter = iter(self.data_loader)
+            batch = next(self._data_iter)
+        data_time = time.perf_counter() - start
+
+        #####################
+        # 2. Calculate loss #
+        #####################
+        # If self._enable_amp=False, autocast and GradScaler’s calls become no-ops.
+        # This allows switching between default precision and mixed precision
+        # without if-else statements.
+        with autocast(enabled=self._enable_amp):
+            if self.unpack_batch_dict:
+                loss_dict = self.model(**batch)
+            else:
+                loss_dict = self.model(batch)
+            if isinstance(loss_dict, torch.Tensor):
+                losses = loss_dict
+                loss_dict = {"total_loss": loss_dict}
+            else:
+                losses = sum(loss_dict.values())
+
+        ##########################
+        # 3. Calculate gradients #
+        ##########################
+        self.optimizer.zero_grad()
+        self._grad_scaler.scale(losses).backward()
+        if self._clip_grad_norm > 0:
+            self._grad_scaler.unscale_(self.optimizer)
+            nn.utils.clip_grad_norm_(self.model.parameters(), self._clip_grad_norm)
+
+        ##############################
+        # 4. Update model parameters #
+        ##############################
+        self._grad_scaler.step(self.optimizer)
+        self._grad_scaler.update()
+
+        self._log_iter_metrics(
+            loss_dict, data_time, time.perf_counter() - iter_start_time
+        )
+
+    def train(
+        self, resume_from_checkpoint: Optional[str] = None, auto_resume: bool = True
+    ) -> None:
+        """Start training.
+
+        If ``resume_from_checkpoint`` is specified, resume from the given checkpoint.
+        Otherwise, auto resume from the latest checkpoint.
+
+        Args:
+            resume_from_checkpoint (str): Path to the checkpoint. Defaults to None.
+            auto_resume (bool): Defaults to True.
+        """
+        if resume_from_checkpoint is not None:
+            self.load_checkpoint(path=resume_from_checkpoint)
+        else:
+            self.load_checkpoint(auto_resume=auto_resume)
+
+        logger.info(f"Start training from iteration {self.start_iter}")
+
+        self._call_hooks("before_train")
+        for self.cur_iter in range(self.start_iter, self.max_iters):
+            if self.train_by_epoch and self.cur_iter % self.epoch_len == 0:
+                self._call_hooks("before_epoch")
+            self._call_hooks("before_iter")
+            self.train_one_iter()
+            self._call_hooks("after_iter")
+            if self.train_by_epoch and (self.cur_iter + 1) % self.epoch_len == 0:
+                self._call_hooks("after_epoch")
+        self._call_hooks("after_train")
+
     def save_checkpoint(self, file_name: str) -> None:
         """Save training state: ``epoch``, ``num_gpus``, ``model``, ``optimizer``, ``lr_scheduler``,
         ``metric_storage``, ``hooks`` (optional), ``grad_scaler`` (optional).
@@ -358,5 +446,70 @@ class Trainer:
         return self.model
 
 
-class MetricStorage:
-    pass
+class MetricStorage(dict):
+    """The class stores the values of multiple metrics (some of them may be noisy, e.g., loss,
+    batch time) in training process, and provides access to the smoothed values for better logging.
+
+    The class is designed for automatic tensorboard logging. User should specify the ``smooth``
+    when calling :meth:`update`, so that we can determine which metrics should be
+    smoothed when performing tensorboard logging.
+
+    Example::
+
+        >>> metric_storage = MetricStorage()
+        >>> metric_storage.update(iter=0, loss=0.2)
+        >>> metric_storage.update(iter=0, lr=0.01, smooth=False)
+        >>> metric_storage.update(iter=1, loss=0.1)
+        >>> metric_storage.update(iter=1, lr=0.001, smooth=False)
+        >>> # loss will be smoothed, but lr will not
+        >>> metric_storage.values_maybe_smooth
+        {"loss": (1, 0.15), "lr": (1, 0.001)}
+        >>> # like dict, can be indexed by string
+        >>> metric_storage["loss"].avg
+        0.15
+    """
+
+    def __init__(self, window_size: int = 20) -> None:
+        self._window_size = window_size
+        self._history: Dict[str, HistoryBuffer] = self
+        self._smooth: Dict[str, bool] = {}
+        self._latest_iter: Dict[str, int] = {}
+
+    def update(self, iter: Optional[int] = None, smooth: bool = True, **kwargs) -> None:
+        """Add new scalar values of multiple metrics produced at a certain iteration.
+
+        Args:
+            iter (int): The iteration in which these values are produced.
+                If None, use the built-in counter starting from 0.
+            smooth (bool): If True, return the smoothed values of these metrics when
+                calling :meth:`values_maybe_smooth`. Otherwise, return the latest values.
+                The same metric must have the same ``smooth`` in different calls to :meth:`update`.
+        """
+        for key, value in kwargs.items():
+            if key in self._smooth:
+                assert self._smooth[key] == smooth
+            else:
+                self._smooth[key] = smooth
+                self._history[key] = HistoryBuffer(window_size=self._window_size)
+                self._latest_iter[key] = -1
+            if iter is not None:
+                assert iter > self._latest_iter[key]
+                self._latest_iter[key] = iter
+            else:
+                self._latest_iter[key] += 1
+            self._history[key].update(value)
+
+    @property
+    def values_maybe_smooth(self) -> Dict[str, Tuple[int, float]]:
+        """Return the smoothed values or the latest values of multiple metrics.
+        The specific behavior depends on the ``smooth`` when updating metrics.
+
+        Returns:
+            dict[str -> (int, float)]:
+                Mapping from metric name to its (the latest iteration, the avg / the latest value)
+                pair.
+        """
+        return {
+            key: (self._latest_iter[key], his_buf.avg if self._smooth[key] else his_buf.latest)
+            for key, his_buf in self._history.items()
+        }
