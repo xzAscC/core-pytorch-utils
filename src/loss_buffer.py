@@ -46,3 +46,8 @@ class HistoryBuffer:
     def global_sum(self) -> float:
         """The global sum of the queue."""
         return self._sum
+
+    @property
+    def latest(self) -> float:
+        """The latest value of the queue."""
+        return self._history[-1]

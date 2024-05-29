@@ -1,5 +1,5 @@
-from eval_hook import EvalHook
-from hookbase import HookBase
+from .eval_hook import EvalHook
+from .hookbase import HookBase
 """TODO: lr update hook"""
 
 class LRUpdateHook(HookBase):

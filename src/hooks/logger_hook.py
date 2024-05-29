@@ -35,11 +35,9 @@ class LoggerHook(HookBase):
     def after_train(self) -> None:
         self._tb_writer.close()
         total_train_time = time.perf_counter() - self._train_start_time
-        total_hook_time = total_train_time - self.metric_storage["iter_time"].global_sum
         logger.info(
-            "Total training time: {} ({} on hooks)".format(
+            "Total training time: {}".format(
                 str(datetime.timedelta(seconds=int(total_train_time))),
-                str(datetime.timedelta(seconds=int(total_hook_time))),
             )
         )
 

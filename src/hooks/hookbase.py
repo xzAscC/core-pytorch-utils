@@ -1,11 +1,12 @@
-import trainer
-from types import Optional
+from typing import Optional
+
+
 class HookBase:
     """Base class for hooks.
 
     Hooks can be registered in :class:`trainer.Trainer`. Each hook can implement 6 methods
     (:meth:`before_train`, :meth:`after_train`, :meth:`before_epoch`, :meth:`after_epoch`,
-    :meth:`before_iter`, :meth:`after_iter`).         
+    :meth:`before_iter`, :meth:`after_iter`).
 
     In the hook method, users can access ``self.trainer`` to access more
     properties about the context (e.g., model, optimizer, current epoch).
@@ -26,7 +27,8 @@ class HookBase:
     >>>     hook.after_epoch()
     >>> hook.after_train()
     """
-    trainer: Optional[trainer.Trainer] = None
+
+    trainer: "Trainer" = None
     priority: int = 5
 
     def before_train(self) -> None:
@@ -66,7 +68,7 @@ class HookBase:
         return self.__class__.__name__
 
     @property
-    def metric_storage(self) -> Optional(trainer.MetricStorage):
+    def metric_storage(self) -> "MetricStorage":
         return self.trainer.metric_storage
 
     def log(self, *args, **kwargs) -> None:

@@ -1,21 +1,21 @@
-from .loss_buffer import HistoryBuffer
+from loss_buffer import HistoryBuffer
 import logging
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import torch.nn as nn
-from .lr_scheduler import LRWarmupScheduler
-from .logger import setup_logger
+from lr_scheduler import LRWarmupScheduler
+from logger import setup_logger
 from typing import List, Dict, Optional, Tuple
 import time
 import os
 import weakref
 import numpy as np
-from .hooks.hookbase import HookBase
-from .hooks.lr_update_hook import LRUpdateHook
-from .hooks.checkpoint_hook import CheckpointHook
-from .hooks.logger_hook import LoggerHook
-from .misc import set_random_seed, collect_env, symlink
+from hooks.hookbase import HookBase
+from hooks.lr_update_hook import LRUpdateHook
+from hooks.checkpoint_hook import CheckpointHook
+from hooks.logger_hook import LoggerHook
+from misc import set_random_seed, collect_env, symlink
 from torch.cuda.amp import GradScaler, autocast
 
 __all__ = ["Trainer"]
@@ -47,7 +47,7 @@ class Trainer:
         warmup_factor: float = 0.0,
     ):
         model.train()
-        self.train_by_epoch = max_epochs > 0
+        self.train_by_epoch = True
         self.model = model
         epoch_len = len(data_loader) if self.train_by_epoch else None
         self.optimizer = optimizer
@@ -116,6 +116,11 @@ class Trainer:
     def hook_info(self) -> List[str]:
         """The names of all registered hooks."""
         return [h.__class__.__name__ + f" (priority {h.priority})" for h in self._hooks]
+
+    @property
+    def lr(self) -> float:
+        """The learning rate of the first parameter group."""
+        return self.optimizer.param_groups[0]["lr"]
 
     def log(self, *args, **kwargs) -> None:
         """Update the metrics stored in :obj:`self.trainer.metric_storage`."""
@@ -195,7 +200,11 @@ class Trainer:
             data_time (float): Time taken by the dataloader iteration.
             iter_time (float): Time taken by one complete iteration.
         """
-        metrics_dict = {k: v.detach().cpu().item() for k, v in loss_dict.items()}
+        try:
+            metrics_dict = {k: v.detach().cpu().item() for k, v in loss_dict.items()}
+        except Exception as e:
+            metrics_dict = {k: v.detach().cpu().mean() for k, v in loss_dict.items()}
+
         metrics_dict.update(data_time=data_time, iter_time=iter_time)
         # gather metrics among all workers for logging
         all_metrics_dict = [metrics_dict]
@@ -269,7 +278,11 @@ class Trainer:
         # 3. Calculate gradients #
         ##########################
         self.optimizer.zero_grad()
-        self._grad_scaler.scale(losses).backward()
+        try:
+            self._grad_scaler.scale(losses).backward()
+        except Exception as e:
+            self._grad_scaler.scale(losses.mean()).backward()
+
         if self._clip_grad_norm > 0:
             self._grad_scaler.unscale_(self.optimizer)
             nn.utils.clip_grad_norm_(self.model.parameters(), self._clip_grad_norm)
@@ -313,6 +326,8 @@ class Trainer:
             if self.train_by_epoch and (self.cur_iter + 1) % self.epoch_len == 0:
                 self._call_hooks("after_epoch")
         self._call_hooks("after_train")
+        print(self.metric_storage)
+        print(self.max_iters)
 
     def save_checkpoint(self, file_name: str) -> None:
         """Save training state: ``epoch``, ``num_gpus``, ``model``, ``optimizer``, ``lr_scheduler``,
@@ -510,6 +525,9 @@ class MetricStorage(dict):
                 pair.
         """
         return {
-            key: (self._latest_iter[key], his_buf.avg if self._smooth[key] else his_buf.latest)
+            key: (
+                self._latest_iter[key],
+                his_buf.avg if self._smooth[key] else his_buf.latest,
+            )
             for key, his_buf in self._history.items()
         }

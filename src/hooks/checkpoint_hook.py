@@ -1,4 +1,4 @@
-from hookbase import HookBase
+from .hookbase import HookBase
 from typing import List, Optional, Dict, Any
 import os
 
@@ -17,10 +17,8 @@ class CheckpointHook(HookBase):
 
     def __init__(self, period: int, max_to_keep: Optional[int] = None) -> None:
         self._period = period
-        if max_to_keep > 0:
-            self._max_to_keep = max_to_keep
-        else:
-            self._max_to_keep = None
+        assert max_to_keep is None or max_to_keep > 0
+        self._max_to_keep = max_to_keep
 
         self._recent_checkpoints: List[str] = []
 
